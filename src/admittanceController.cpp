@@ -91,7 +91,7 @@ void ETankGen::update(const std::vector<Eigen::VectorXd> inputs, const std::vect
 	double Diss=0;
 	double wtot = 0;
 
-	for (int i=0; i<_alpha.size(); i++)
+	for (int i=0; i<dissInputs.size(); i++)
 		Diss+=dissInputs[i];
 
 	for (int i=0; i<_alpha.size(); i++) {
@@ -228,7 +228,7 @@ class KUKA_INVDYN {
 		kuka_control::waypointsFeedback _actionFeedback;
   		kuka_control::waypointsResult _actionResult;
 		LowPassFilter lpf[6];
-		double _admittanceEnergy;
+		double _admittanceEnergy, _forcesEnergy;
 		diverterState _state;
 };
 
@@ -483,8 +483,8 @@ void KUKA_INVDYN::updateState() {
           if(_extWrench.norm()>uptresh) {
 		  	_state = HOOKED;
 			ROS_WARN("STATE: HOOKED!");
-			_Kdt = gain*_Kdt;
-			_Kpt = gain*_Kpt;
+			//_Kdt = gain*_Kdt;
+			//_Kpt = gain*_Kpt;
 			//_Mt = gain*_Mt;
 		  }
           break;
@@ -500,8 +500,8 @@ void KUKA_INVDYN::updateState() {
           if(complVelEigen.norm()<0.001) {
             _state = NORMAL;
 			ROS_WARN("STATE: NORMAL!");
-			_Kdt = (1.0/gain)*_Kdt;
-			_Kpt = (1.0/gain)*_Kpt;
+			//_Kdt = (1.0/gain)*_Kdt;
+			//_Kpt = (1.0/gain)*_Kpt;
 			//_Mt = (1.0/gain)*_Mt;
           }
           break;
@@ -522,11 +522,16 @@ void KUKA_INVDYN::ctrl_loop() {
   KDL::JntSpaceInertiaMatrix jsim_;
   jsim_.resize(_k_chain.getNrOfJoints());
 
-
 	ros::Rate r(_freq);
 
 	//ETank tank(1.0,0.01,1.0,_sTime);
 	//ETankGen tankGen(3.0,0.01,3.0,_sTime,1);
+	ETankGen stiffnessTank(3.0,0.01,2.0,_sTime,1);
+
+	Eigen::MatrixXd finalKp = 3*_Kpt;
+	Eigen::MatrixXd initialKp = _Kpt;
+	Eigen::MatrixXd KpDot = Eigen::MatrixXd::Zero(6,6);
+	double finalT = 0.1; //transition in 0.2 seconds
 
 	while( !_first_js ) usleep(0.1);
 
@@ -559,6 +564,58 @@ void KUKA_INVDYN::ctrl_loop() {
 		//cout<<tankGen.getEt()<<endl;
 
 		//compute_compliantFrame(_desPose,_desVel,_desAcc,tankGen._alpha);
+
+
+		if( (_state == HOOKED) || (_state == DETACHED) ) {
+			for(int i=0; i<6; i++) {
+				if(_Kpt(i,i)<finalKp(i,i)) {
+					//ROS_WARN("POSITIVA");
+					KpDot(i,i) = ((finalKp(i,i)-initialKp(i,i))/finalT);
+					//_Kpt(i,i) += (finalKp(i,i)/finalT) * _sTime;
+				}
+				else
+					KpDot(i,i) = 0;
+			}
+		}
+		else if( _state == NORMAL ) {
+			for(int i=0; i<6; i++) {
+				if(_Kpt(i,i)>initialKp(i,i)) {
+					//ROS_WARN("NEGATIVA");
+					//cout<<KpDot(i,i)<< " ";
+					KpDot(i,i) = -((finalKp(i,i)-initialKp(i,i))/finalT);
+					//_Kpt(i,i) -= (finalKp(i,i)/finalT) * _sTime;
+				}
+				else
+					KpDot(i,i) = 0;
+			}
+		}
+
+		std::vector<Eigen::VectorXd> tankInputs, tankProds;
+		std::vector<double> tankDiss;
+
+		tankDiss.push_back(zDot_t.dot(_Kdt*zDot_t));
+		Eigen::VectorXd prod = KpDot*z_t;
+		//for(int i=0; i<6; i++) {
+		//	tankInputs.push_back(z_t(i));
+		//	tankProds.push_back(prod(i));
+		//}
+		tankInputs.push_back(z_t);
+		tankProds.push_back(prod);
+		stiffnessTank.update(tankInputs,tankDiss,tankProds);
+		//for(int i=0; i<6; i++)
+		//	_Kpt(i,i) += stiffnessTank._alpha[i] * KpDot(i,i) * _sTime;
+		//if(KpDot(1,1)!=0) {
+			//ROS_WARN("Prints derivata:");
+		//	cout<<stiffnessTank._alpha[0] << " " << _sTime << " " << KpDot(1,1)<<endl;
+		//}
+		_Kpt += stiffnessTank._alpha[0] * _sTime * KpDot;
+
+		double totalEnergy = _admittanceEnergy + stiffnessTank.getEt() - _forcesEnergy;
+		std_msgs::Float64 msg;
+		msg.data = totalEnergy;
+		_totalEnergy_pub.publish(msg);
+		//cout<<_Kpt(1,1)<<endl;
+
 
 		_desPose_pub.publish(_desPose);
 		updateState();
@@ -871,10 +928,12 @@ void KUKA_INVDYN::compute_compliantFrame(const geometry_msgs::PoseStamped& p_des
 		_complVel.twist.angular.x,
 		_complVel.twist.angular.y,
 		_complVel.twist.angular.z;
-	_admittanceEnergy = ((vel.transpose() * _Mt * vel) + (z_t.transpose() * _Kpt * z_t)).value();
+	_admittanceEnergy = ((zDot_t.transpose() * _Mt * zDot_t) + (z_t.transpose() * _Kpt * z_t)).value();
 	std_msgs::Float64 msg;
 	msg.data = _admittanceEnergy;
 	_robotEnergy_pub.publish(msg);
+
+	_forcesEnergy += zDot_t.dot(_extWrench) * _sTime;
 }
 
 void KUKA_INVDYN::updatePose() {
