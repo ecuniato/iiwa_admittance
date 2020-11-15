@@ -1,0 +1,17 @@
+#goal definition
+nav_msgs/Path waypoints
+float64[] times
+geometry_msgs/TwistStamped initVel
+geometry_msgs/TwistStamped finalVel
+geometry_msgs/AccelStamped initAcc
+geometry_msgs/AccelStamped finalAcc
+bool poseOrForce
+geometry_msgs/WrenchStamped initWrench
+geometry_msgs/WrenchStamped finalWrench
+geometry_msgs/WrenchStamped mask
+---
+#result definition
+bool ok
+---
+#feedback definition
+float64 completePerc
