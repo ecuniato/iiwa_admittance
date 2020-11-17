@@ -6,7 +6,7 @@
   <arg name="origin_xyz" default="'0 0 0'"/> <!-- Note the syntax to pass a vector -->
   <arg name="origin_rpy" default="'0 0 0'"/>
   <arg name="model" default="iiwa7" />
-  <arg name="simulation" default="true"/>
+  <arg name="simulation" default="false"/>
 
    
   <group if="$(arg simulation)">
@@ -30,6 +30,8 @@
     </node>
 
     <node name="netft_node" pkg="netft_utils" type="netft_node" args="--address 172.31.1.82"/>
+
+    <node type="rviz" name="rviz" pkg="rviz" args="-d $(find kuka_control)/config.rviz" />
   </group>
 
 </launch>

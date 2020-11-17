@@ -179,7 +179,7 @@ class KUKA_INVDYN {
 		ros::Subscriber _wrench_sub, _real_wrench_sub;
 		ros::Publisher _cartpose_pub, _cartvel_pub, _desPose_pub, _extWrench_pub, _linearDifference_pub, _linearVelDifference_pub;
 		ros::Publisher _plannedpose_pub,_plannedtwist_pub,_plannedacc_pub,_plannedwrench_pub;
-		ros::Publisher _robotEnergy_pub, _totalEnergy_pub;
+		ros::Publisher _robotEnergy_pub, _totalEnergy_pub, _totalPower_pub, _kpvalue_pub, _kdvalue_pub;
 		KDL::JntArray *_initial_q;
 		KDL::JntArray *_q_in;
 		KDL::JntArray *_q_out;
@@ -230,6 +230,7 @@ class KUKA_INVDYN {
 		LowPassFilter lpf[6];
 		double _admittanceEnergy, _forcesEnergy;
 		diverterState _state;
+		bool _firstCompliant;
 };
 
 bool KUKA_INVDYN::init_robot_model() {
@@ -285,7 +286,7 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 	cout << "Joints and segments: " << iiwa_tree.getNrOfJoints() << " - " << iiwa_tree.getNrOfSegments() << endl;
 
 
-	_js_sub = _nh.subscribe("/lbr_iiwa/joint_states", 0, &KUKA_INVDYN::joint_states_cb, this);
+	_js_sub = _nh.subscribe("/iiwa/joint_states", 0, &KUKA_INVDYN::joint_states_cb, this);
 	_js_pub = _nh.advertise<std_msgs::Float64MultiArray>("/iiwa/jointsCommand", 0);
 	_wrench_sub = _nh.subscribe("/tool_contact_sensor_state", 0, &KUKA_INVDYN::interaction_wrench_cb, this);
 	_real_wrench_sub = _nh.subscribe("/netft_data", 0, &KUKA_INVDYN::real_interaction_wrench_cb, this);
@@ -300,8 +301,11 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 	_extWrench_pub = _nh.advertise<geometry_msgs::WrenchStamped>("/iiwa/eef_ext_wrench", 0);
 	_robotEnergy_pub = _nh.advertise<std_msgs::Float64>("/iiwa/admittance_energy", 0);
 	_totalEnergy_pub = _nh.advertise<std_msgs::Float64>("/iiwa/total_energy", 0);
+	_totalPower_pub = _nh.advertise<std_msgs::Float64>("/iiwa/total_power", 0);
 	_linearDifference_pub = _nh.advertise<geometry_msgs::PointStamped>("/iiwa/linearDifference", 0);
 	_linearVelDifference_pub = _nh.advertise<geometry_msgs::PointStamped>("/iiwa/linearVelDifference", 0);
+	_kpvalue_pub = _nh.advertise<std_msgs::Float64>("/iiwa/kpvalue", 0);
+	_kdvalue_pub = _nh.advertise<std_msgs::Float64>("/iiwa/kdvalue", 0);
 
 	_cmd_pub[0] = _nh.advertise< std_msgs::Float64 > ("lbr_iiwa/joint1_position_controller/command", 0);
 	_cmd_pub[1] = _nh.advertise< std_msgs::Float64 > ("lbr_iiwa/joint2_position_controller/command", 0);
@@ -334,8 +338,8 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 
 	_Mt = 50*Eigen::MatrixXd::Identity(6,6);
 	//_Mt.bottomRightCorner(3,3) = 70*Eigen::MatrixXd::Identity(3,3);
-	_Kdt = 500*Eigen::MatrixXd::Identity(6,6);
-	_Kpt = 300*Eigen::MatrixXd::Identity(6,6);
+	_Kdt = 4*500*Eigen::MatrixXd::Identity(6,6);
+	_Kpt = 6*500*Eigen::MatrixXd::Identity(6,6);
 	//_Kpt.bottomRightCorner(3,3) = 1000*Eigen::MatrixXd::Identity(3,3);
 
 	_h_des.resize(6); _h_des=Eigen::VectorXd::Zero(6);
@@ -351,6 +355,7 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 	_trajEnd = true;
 	_newPosReady = false;
 	_first_wrench = false;
+	_firstCompliant = false;
 
 	_kukaActionServer.start();
 }
@@ -400,6 +405,7 @@ void KUKA_INVDYN::interaction_wrench_cb(const gazebo_msgs::ContactsStateConstPtr
 		_extWrench.head(3) = Re*_extWrench.head(3);
 		_extWrench.tail(3) = Re*_extWrench.tail(3);
 		geometry_msgs::WrenchStamped wrenchstamp;
+		wrenchstamp.header.stamp = ros::Time::now();
 		wrenchstamp.wrench.force.x = _extWrench(0);
 		wrenchstamp.wrench.force.y = _extWrench(1);
 		wrenchstamp.wrench.force.z = _extWrench(2);
@@ -416,16 +422,22 @@ void KUKA_INVDYN::interaction_wrench_cb(const gazebo_msgs::ContactsStateConstPtr
 
 void KUKA_INVDYN::real_interaction_wrench_cb(const geometry_msgs::WrenchStampedConstPtr& message) {
 	
-	_extWrench(0)=message->wrench.force.x;
-	_extWrench(1)=message->wrench.force.y;
-	_extWrench(2)=message->wrench.force.z;
-	_extWrench(3)=message->wrench.torque.x;
-	_extWrench(4)=message->wrench.torque.y;
-	_extWrench(5)=message->wrench.torque.z;
+	Eigen::VectorXd localWrench, outWrench;
+	localWrench.resize(6);
+	outWrench.resize(6);
+
+	localWrench(0)=message->wrench.force.x;
+	localWrench(1)=message->wrench.force.y;
+	localWrench(2)=message->wrench.force.z;
+	localWrench(3)=message->wrench.torque.x;
+	localWrench(4)=message->wrench.torque.y;
+	localWrench(5)=message->wrench.torque.z;
+
+	outWrench = localWrench;
 
 	for (int i=0; i<6; i++) {
-		//cout<<lpf[i].update(_extWrench(i),0.002,100.0/(2.0*M_PI))<<"  real:"<<_extWrench(i)<<endl;
-		_extWrench(i) = lpf[i].update(_extWrench(i),0.002,100.0/(2.0*M_PI));
+		//cout<<lpf[i].update(localWrench(i),0.002,100.0/(2.0*M_PI))<<"  real:"<<localWrench(i)<<endl;
+		localWrench(i) = lpf[i].update(localWrench(i),0.002,100.0/(2.0*M_PI));
 	}
 	//cout<<endl;
 
@@ -434,16 +446,27 @@ void KUKA_INVDYN::real_interaction_wrench_cb(const geometry_msgs::WrenchStampedC
 	Eigen::Matrix3d Re;
 	Re_tf.setRotation(qe);
 	tf::matrixTFToEigen(Re_tf,Re);
-	_extWrench.head(3) = Re*_extWrench.head(3);
-	_extWrench.tail(3) = Re*_extWrench.tail(3);
+	localWrench.head(3) = Re*localWrench.head(3);
+	localWrench.tail(3) = Re*localWrench.tail(3);
+	outWrench.head(3) = Re*outWrench.head(3);
+	outWrench.tail(3) = Re*outWrench.tail(3);
 	geometry_msgs::WrenchStamped wrenchstamp;
-	wrenchstamp.wrench.force.x = _extWrench(0);
-	wrenchstamp.wrench.force.y = _extWrench(1);
-	wrenchstamp.wrench.force.z = _extWrench(2);
-	wrenchstamp.wrench.torque.x = _extWrench(3);
-	wrenchstamp.wrench.torque.y = _extWrench(4);
-	wrenchstamp.wrench.torque.z = _extWrench(5);
+	wrenchstamp.header.stamp = ros::Time::now();
+	wrenchstamp.wrench.force.x = outWrench(0);
+	wrenchstamp.wrench.force.y = outWrench(1);
+	wrenchstamp.wrench.force.z = outWrench(2);
+	wrenchstamp.wrench.torque.x = outWrench(3);
+	wrenchstamp.wrench.torque.y = outWrench(4);
+	wrenchstamp.wrench.torque.z = outWrench(5);
+
+	_extWrench = localWrench;
 	_extWrench_pub.publish(wrenchstamp);
+
+	if((_extWrench.norm()<1000) && _firstCompliant && (zDot_t.norm()!=0)) {
+		//cout<<"calcolo"<<endl;	
+		//_forcesEnergy += zDot_t.head(3).dot(_extWrench.head(3)) * (1.0/500.0);
+		//double totalPower = zDot_t.dot(_extWrench);
+	}
 
 	_first_wrench=true;
 }
@@ -477,7 +500,7 @@ void KUKA_INVDYN::joint_states_cb( sensor_msgs::JointState js ) {
 
 void KUKA_INVDYN::updateState() {
 	double uptresh = 15.0, lowtresh = uptresh/2.0;
-	double gain=3;
+	double gain=2;
 	switch(_state) {
         case NORMAL:
           if(_extWrench.norm()>uptresh) {
@@ -526,12 +549,15 @@ void KUKA_INVDYN::ctrl_loop() {
 
 	//ETank tank(1.0,0.01,1.0,_sTime);
 	//ETankGen tankGen(3.0,0.01,3.0,_sTime,1);
-	ETankGen stiffnessTank(3.0,0.01,2.0,_sTime,1);
+	ETankGen stiffnessTank(1.0,0.01,1.0,_sTime,1);
 
-	Eigen::MatrixXd finalKp = 3*_Kpt;
+	Eigen::MatrixXd finalKp = 2*_Kpt;
 	Eigen::MatrixXd initialKp = _Kpt;
 	Eigen::MatrixXd KpDot = Eigen::MatrixXd::Zero(6,6);
-	double finalT = 0.1; //transition in 0.2 seconds
+	Eigen::MatrixXd finalKd = 1.5*_Kdt;
+	Eigen::MatrixXd initialKd = _Kdt;
+	Eigen::MatrixXd KdDot = Eigen::MatrixXd::Zero(6,6);
+	double finalT = 0.2; //transition in 0.2 seconds
 
 	while( !_first_js ) usleep(0.1);
 
@@ -575,6 +601,14 @@ void KUKA_INVDYN::ctrl_loop() {
 				}
 				else
 					KpDot(i,i) = 0;
+
+				if(_Kdt(i,i)<finalKd(i,i)) {
+					//ROS_WARN("POSITIVA");
+					KdDot(i,i) = ((finalKd(i,i)-initialKd(i,i))/finalT);
+					//_Kpt(i,i) += (finalKp(i,i)/finalT) * _sTime;
+				}
+				else
+					KdDot(i,i) = 0;
 			}
 		}
 		else if( _state == NORMAL ) {
@@ -587,6 +621,14 @@ void KUKA_INVDYN::ctrl_loop() {
 				}
 				else
 					KpDot(i,i) = 0;
+
+				if(_Kdt(i,i)>finalKd(i,i)) {
+					//ROS_WARN("POSITIVA");
+					KdDot(i,i) = -((finalKd(i,i)-initialKd(i,i))/finalT);
+					//_Kpt(i,i) += (finalKp(i,i)/finalT) * _sTime;
+				}
+				else
+					KdDot(i,i) = 0;
 			}
 		}
 
@@ -599,7 +641,7 @@ void KUKA_INVDYN::ctrl_loop() {
 		//	tankInputs.push_back(z_t(i));
 		//	tankProds.push_back(prod(i));
 		//}
-		tankInputs.push_back(z_t);
+		tankInputs.push_back(0.5*z_t);
 		tankProds.push_back(prod);
 		stiffnessTank.update(tankInputs,tankDiss,tankProds);
 		//for(int i=0; i<6; i++)
@@ -608,10 +650,18 @@ void KUKA_INVDYN::ctrl_loop() {
 			//ROS_WARN("Prints derivata:");
 		//	cout<<stiffnessTank._alpha[0] << " " << _sTime << " " << KpDot(1,1)<<endl;
 		//}
-		_Kpt += stiffnessTank._alpha[0] * _sTime * KpDot;
-
-		double totalEnergy = _admittanceEnergy + stiffnessTank.getEt() - _forcesEnergy;
 		std_msgs::Float64 msg;
+		_Kpt += stiffnessTank._alpha[0] * _sTime * KpDot;
+		//_Kpt += _sTime * KpDot;
+		msg.data = _Kpt(0,0);
+		_kpvalue_pub.publish(msg);
+		_Kdt += _sTime * KdDot;
+		msg.data = _Kdt(0,0);
+		_kdvalue_pub.publish(msg);
+		if (stiffnessTank._alpha[0] != 1)
+			cout<<stiffnessTank._alpha[0] << " " << _Kpt(1,1)<<endl;
+
+		double totalEnergy = _admittanceEnergy - _forcesEnergy + stiffnessTank.getEt()  ;
 		msg.data = totalEnergy;
 		_totalEnergy_pub.publish(msg);
 		//cout<<_Kpt(1,1)<<endl;
@@ -928,12 +978,18 @@ void KUKA_INVDYN::compute_compliantFrame(const geometry_msgs::PoseStamped& p_des
 		_complVel.twist.angular.x,
 		_complVel.twist.angular.y,
 		_complVel.twist.angular.z;
-	_admittanceEnergy = ((zDot_t.transpose() * _Mt * zDot_t) + (z_t.transpose() * _Kpt * z_t)).value();
+	//_admittanceEnergy = ((zDot_t.head(3).transpose() * _Mt.topLeftCorner(3,3) * zDot_t.head(3)) + (z_t.head(3).transpose() * _Kpt.topLeftCorner(3,3) * z_t.head(3))).value();
+	_admittanceEnergy = 0.5*zDot_t.dot(_Mt * zDot_t) + 0.5*z_t.dot(_Kpt * z_t);
 	std_msgs::Float64 msg;
 	msg.data = _admittanceEnergy;
-	_robotEnergy_pub.publish(msg);
-
 	_forcesEnergy += zDot_t.dot(_extWrench) * _sTime;
+	_robotEnergy_pub.publish(msg);
+	double totalPower = zDot_t.dot(_extWrench) - zDot_t.dot(_Kdt * zDot_t);
+	msg.data = totalPower;
+	_totalPower_pub.publish(msg);
+
+
+	_firstCompliant = true;
 }
 
 void KUKA_INVDYN::updatePose() {

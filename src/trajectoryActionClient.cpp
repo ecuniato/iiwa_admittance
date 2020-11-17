@@ -134,7 +134,7 @@ int main (int argc, char **argv)
   p=initPose;
   p.pose.position.x = 0.56;
 	p.pose.position.y = 0.0;
-	p.pose.position.z = 0.50;
+	p.pose.position.z = 0.40;
   tf::Quaternion qinit(0.9763,0.0592,0.207,-0.0196);
   qinit.normalize();
 	p.pose.orientation.z = qinit.z();
@@ -145,7 +145,7 @@ int main (int argc, char **argv)
 
   std::vector<double> times;
   times.push_back(0);
-  times.push_back(10);
+  times.push_back(3);
 
   goal.waypoints=waypoints;
   goal.times=times;
@@ -175,7 +175,7 @@ int main (int argc, char **argv)
 
   goal.poseOrForce=true;
   lwrClient.getPose(waypoints.poses[0]);
-  waypoints.poses[1].pose.position.z += 0.15;
+  waypoints.poses[1].pose.position.z += 0.30;
   goal.waypoints=waypoints;
   lwrClient.sendGoal(goal);
 
