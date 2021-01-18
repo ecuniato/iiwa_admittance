@@ -12,7 +12,7 @@
   <group if="$(arg simulation)">
     <include file="$(find lbr_iiwa_description)/launch/gazebo_ctrl.launch" />
     <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher" >
-      <remap from="joint_states" to="lbr_iiwa/joint_states" />
+      <remap from="joint_states" to="iiwa/joint_states" />
     </node>
     <node type="rviz" name="rviz" pkg="rviz" args="-d $(find kuka_control)/config.rviz" />
     <arg name="node_start_delay" default="5.0" />  
@@ -21,6 +21,9 @@
 
 
   <group unless="$(arg simulation)">
+    <rosparam>
+      use_sim_time: false
+   </rosparam>
     <param name="robot_description" command="$(find xacro)/xacro --inorder '$(find kuka_control)/urdf/iiwa7.urdf.xacro' hardware_interface:=$(arg hardware_interface) robot_name:=$(arg robot_name) origin_xyz:=$(arg origin_xyz) origin_rpy:=$(arg origin_rpy)"/>
 
     <node name="rosToFri" pkg="ros_fri_interface" type="rosToFri" />

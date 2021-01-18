@@ -16,6 +16,16 @@
   <xacro:property name="max_velocity" value="10"/>
   
   <xacro:macro name="iiwa7" params="parent hardware_interface robot_name *origin">
+
+  <!-- JOINT LIMITS (DEG):
+    #1: -170 TO 170
+    #2: -120 TO 120
+    #3: -170 TO 170
+    #4: -120 TO 120
+    #5: -170 TO 170
+    #6: -120 TO 120
+    #7: -175 TO 175 
+  -->
     
     <!--joint between {parent} and link_0-->
     <joint name="${parent}_${robot_name}_joint" type="fixed">

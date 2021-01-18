@@ -8,7 +8,8 @@ Panels:
         - /Status1
         - /RobotModel1
         - /RobotModel1/Links1
-        - /RobotModel1/Links1/iiwa_link_sensor_kuka1
+        - /TF1
+        - /TF1/Frames1
       Splitter Ratio: 0.5
     Tree Height: 438
   - Class: rviz/Selection
@@ -65,55 +66,42 @@ Visualization Manager:
         Expand Link Details: false
         Expand Tree: false
         Link Tree Style: Links in Alphabetic Order
-        iiwa_link_0:
+        lbr_iiwa_link_0:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        iiwa_link_1:
+        lbr_iiwa_link_1:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        iiwa_link_2:
+        lbr_iiwa_link_2:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        iiwa_link_3:
+        lbr_iiwa_link_3:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        iiwa_link_4:
+        lbr_iiwa_link_4:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        iiwa_link_5:
+        lbr_iiwa_link_5:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        iiwa_link_6:
+        lbr_iiwa_link_6:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        iiwa_link_7:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        iiwa_link_ee:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        iiwa_link_sensor_kuka:
-          Alpha: 1
-          Show Axes: true
-          Show Trail: false
-        tool_link:
+        lbr_iiwa_link_7:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -128,6 +116,70 @@ Visualization Manager:
       Update Interval: 0
       Value: true
       Visual Enabled: true
+    - Class: rviz/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: false
+        lbr_iiwa_link_0:
+          Value: true
+        lbr_iiwa_link_1:
+          Value: true
+        lbr_iiwa_link_2:
+          Value: true
+        lbr_iiwa_link_3:
+          Value: true
+        lbr_iiwa_link_4:
+          Value: true
+        lbr_iiwa_link_5:
+          Value: true
+        lbr_iiwa_link_6:
+          Value: true
+        lbr_iiwa_link_7:
+          Value: true
+        world:
+          Value: true
+      Marker Scale: 1
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: false
+      Tree:
+        world:
+          lbr_iiwa_link_0:
+            lbr_iiwa_link_1:
+              lbr_iiwa_link_2:
+                lbr_iiwa_link_3:
+                  lbr_iiwa_link_4:
+                    lbr_iiwa_link_5:
+                      lbr_iiwa_link_6:
+                        lbr_iiwa_link_7:
+                          {}
+      Update Interval: 0
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz/Path
+      Color: 25; 255; 0
+      Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Lines
+      Line Width: 0.029999999329447746
+      Name: Path
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
+      Topic: /planner/plannedTraj
+      Unreliable: false
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -156,25 +208,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 3.969904899597168
+      Distance: 2.4024658203125
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.2594887912273407
-        Y: -0.10361380130052567
-        Z: 0.015734003856778145
+        X: 0.5047581791877747
+        Y: 0.035316597670316696
+        Z: 0.5066111087799072
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.41039833426475525
+      Pitch: 0.3303985297679901
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 1.215397596359253
+      Yaw: 5.625413417816162
     Saved: ~
 Window Geometry:
   Displays:
@@ -192,5 +244,5 @@ Window Geometry:
   Views:
     collapsed: true
   Width: 679
-  X: 2603
+  X: 683
   Y: 18

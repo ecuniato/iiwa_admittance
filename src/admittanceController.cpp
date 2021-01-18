@@ -72,8 +72,8 @@ void ETank::update(const Eigen::VectorXd input, const Eigen::MatrixXd Kd, const 
 
 class ETankGen {
 	public:
-		ETankGen(double Einit, double Emin, double Emax, double dt, int inputSize) {_Et=Einit;_Emin=Emin; _Emax=Emax; _xt=sqrt(2*_Et);_dt=dt;_alpha.resize(inputSize);};
-		void update(const std::vector<Eigen::VectorXd> inputs, const std::vector<double> dissInputs, const std::vector<Eigen::VectorXd> products);
+		ETankGen(double Einit, double Emin, double Emax, double dt, int inputSize);
+		void update(const std::vector<double> inputs, const std::vector<double> dissInputs);
 		double getEt() {return _Et;};
 		std::vector<double> _alpha;
 	private:
@@ -82,7 +82,18 @@ class ETankGen {
 		double _dt;
 };
 
-void ETankGen::update(const std::vector<Eigen::VectorXd> inputs, const std::vector<double> dissInputs, const std::vector<Eigen::VectorXd> products) {
+ETankGen::ETankGen(double Einit, double Emin, double Emax, double dt, int inputSize) {
+	_Et=Einit;
+	_Emin=Emin;
+	_Emax=Emax;
+	_xt=sqrt(2*_Et);
+	_dt=dt;
+	for (int i=0; i<inputSize; i++) {
+		_alpha.push_back(1);
+	}
+}
+
+void ETankGen::update(const std::vector<double> inputs, const std::vector<double> dissInputs) {
 	if(_Et<=_Emax) _beta=1;
 	else _beta=0;
 
@@ -95,7 +106,7 @@ void ETankGen::update(const std::vector<Eigen::VectorXd> inputs, const std::vect
 		Diss+=dissInputs[i];
 
 	for (int i=0; i<_alpha.size(); i++) {
-		double w = inputs[i].dot(products[i]);
+		double w = inputs[i];
 		double g_input;
 		if(w<=0) g_input=0;
 		else	g_input=1;
@@ -108,6 +119,8 @@ void ETankGen::update(const std::vector<Eigen::VectorXd> inputs, const std::vect
 		//if(i==1) cout<<"Power: "<<gamma*w<<endl;
 
 		wtot+=gamma*w;
+		if(w!=0)
+			cout<<"Power: "<<w<<"  Diss: "<<Diss<<endl;
 	}
 
 	double ut = -(1.0/_xt)*wtot;
@@ -116,7 +129,6 @@ void ETankGen::update(const std::vector<Eigen::VectorXd> inputs, const std::vect
 	if (_xt>sqrt(_Emax*2)) _xt=sqrt(_Emax*2);
 	_Et = 0.5*_xt*_xt;
 }
-
 
 
 class DERIV {
@@ -203,7 +215,8 @@ class KUKA_INVDYN {
 		Eigen::MatrixXd _Jold;
 		Eigen::MatrixXd _JDot;
 		Eigen::VectorXd _gradManMeas;
-		Eigen::VectorXd _extWrench;
+		Eigen::VectorXd _extWrench, _wrenchBias;
+		int _wrenchCount;
 		Eigen::VectorXd z_t,zDot_t,zDotDot_t;
 		geometry_msgs::PoseStamped _complPose;
 		geometry_msgs::TwistStamped _complVel;
@@ -228,7 +241,7 @@ class KUKA_INVDYN {
 		kuka_control::waypointsFeedback _actionFeedback;
   		kuka_control::waypointsResult _actionResult;
 		LowPassFilter lpf[6];
-		double _admittanceEnergy, _forcesEnergy;
+		double _admittanceEnergy, _forcesEnergy, _contTime;
 		diverterState _state;
 		bool _firstCompliant;
 };
@@ -253,6 +266,8 @@ bool KUKA_INVDYN::init_robot_model() {
 
 	std::string base_link = "iiwa_link_0";
 	std::string tip_link  = "iiwa_link_sensor_kuka";
+	//std::string base_link = "world";
+	//std::string tip_link  = "lbr_iiwa_link_7";
 	if ( !iiwa_tree.getChain(base_link, tip_link, _k_chain) ) return false;
 
 	_fksolver = new KDL::ChainFkSolverPos_recursive( _k_chain );
@@ -304,16 +319,15 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 	_totalPower_pub = _nh.advertise<std_msgs::Float64>("/iiwa/total_power", 0);
 	_linearDifference_pub = _nh.advertise<geometry_msgs::PointStamped>("/iiwa/linearDifference", 0);
 	_linearVelDifference_pub = _nh.advertise<geometry_msgs::PointStamped>("/iiwa/linearVelDifference", 0);
-	_kpvalue_pub = _nh.advertise<std_msgs::Float64>("/iiwa/kpvalue", 0);
-	_kdvalue_pub = _nh.advertise<std_msgs::Float64>("/iiwa/kdvalue", 0);
+	_kpvalue_pub = _nh.advertise<std_msgs::Float64MultiArray>("/iiwa/admit_gains", 0);
 
-	_cmd_pub[0] = _nh.advertise< std_msgs::Float64 > ("lbr_iiwa/joint1_position_controller/command", 0);
-	_cmd_pub[1] = _nh.advertise< std_msgs::Float64 > ("lbr_iiwa/joint2_position_controller/command", 0);
-	_cmd_pub[2] = _nh.advertise< std_msgs::Float64 > ("lbr_iiwa/joint3_position_controller/command", 0);
-	_cmd_pub[3] = _nh.advertise< std_msgs::Float64 > ("lbr_iiwa/joint4_position_controller/command", 0);
-	_cmd_pub[4] = _nh.advertise< std_msgs::Float64 > ("lbr_iiwa/joint5_position_controller/command", 0);
-	_cmd_pub[5] = _nh.advertise< std_msgs::Float64 > ("lbr_iiwa/joint6_position_controller/command", 0);
-	_cmd_pub[6] = _nh.advertise< std_msgs::Float64 > ("lbr_iiwa/joint7_position_controller/command", 0);
+	_cmd_pub[0] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint1_position_controller/command", 0);
+	_cmd_pub[1] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint2_position_controller/command", 0);
+	_cmd_pub[2] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint3_position_controller/command", 0);
+	_cmd_pub[3] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint4_position_controller/command", 0);
+	_cmd_pub[4] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint5_position_controller/command", 0);
+	_cmd_pub[5] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint6_position_controller/command", 0);
+	_cmd_pub[6] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint7_position_controller/command", 0);
 
 	x_t.resize(6);
 	xDot_t.resize(6);
@@ -336,11 +350,18 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 	xf_dot.resize(6); xf_dot=Eigen::VectorXd::Zero(6);
 	xf_dotdot.resize(6); xf_dotdot=Eigen::VectorXd::Zero(6);
 
-	_Mt = 50*Eigen::MatrixXd::Identity(6,6);
+	_Mt = 1*Eigen::MatrixXd::Identity(6,6); //1
 	//_Mt.bottomRightCorner(3,3) = 70*Eigen::MatrixXd::Identity(3,3);
-	_Kdt = 4*500*Eigen::MatrixXd::Identity(6,6);
-	_Kpt = 6*500*Eigen::MatrixXd::Identity(6,6);
+	_Kdt = 15*Eigen::MatrixXd::Identity(6,6); //15
+	_Kpt = 10*Eigen::MatrixXd::Identity(6,6); //10
 	//_Kpt.bottomRightCorner(3,3) = 1000*Eigen::MatrixXd::Identity(3,3);
+	//_Mt(1,1) = 3;
+	//_Kdt(1,1) = 150;
+	//_Kpt(1,1) = 30; 
+
+	_wrenchCount = 0;
+	_wrenchBias = Eigen::VectorXd::Zero(6);
+
 
 	_h_des.resize(6); _h_des=Eigen::VectorXd::Zero(6);
 	_hdot_des.resize(6); _hdot_des=Eigen::VectorXd::Zero(6);
@@ -356,6 +377,8 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 	_newPosReady = false;
 	_first_wrench = false;
 	_firstCompliant = false;
+
+	_contTime=0;
 
 	_kukaActionServer.start();
 }
@@ -423,6 +446,7 @@ void KUKA_INVDYN::interaction_wrench_cb(const gazebo_msgs::ContactsStateConstPtr
 void KUKA_INVDYN::real_interaction_wrench_cb(const geometry_msgs::WrenchStampedConstPtr& message) {
 	
 	Eigen::VectorXd localWrench, outWrench;
+	int nSamples = 500;
 	localWrench.resize(6);
 	outWrench.resize(6);
 
@@ -433,11 +457,26 @@ void KUKA_INVDYN::real_interaction_wrench_cb(const geometry_msgs::WrenchStampedC
 	localWrench(4)=message->wrench.torque.y;
 	localWrench(5)=message->wrench.torque.z;
 
+	if(_wrenchCount<nSamples) {
+		_wrenchBias += localWrench;
+		_wrenchCount++;
+		return;
+	}
+	else if (_wrenchCount==nSamples) {
+		_wrenchBias/=_wrenchCount;
+		_wrenchCount++;
+		ROS_WARN("Force biased!");
+		cout<<_wrenchBias.transpose()<<endl;
+	}
+	
+	for(int i=0; i<6; i++)
+		localWrench(i) -= _wrenchBias(i);
+
 	outWrench = localWrench;
 
 	for (int i=0; i<6; i++) {
 		//cout<<lpf[i].update(localWrench(i),0.002,100.0/(2.0*M_PI))<<"  real:"<<localWrench(i)<<endl;
-		localWrench(i) = lpf[i].update(localWrench(i),0.002,100.0/(2.0*M_PI));
+		localWrench(i) = lpf[i].update(localWrench(i),0.002,3.0/(2.0*M_PI));
 	}
 	//cout<<endl;
 
@@ -450,6 +489,7 @@ void KUKA_INVDYN::real_interaction_wrench_cb(const geometry_msgs::WrenchStampedC
 	localWrench.tail(3) = Re*localWrench.tail(3);
 	outWrench.head(3) = Re*outWrench.head(3);
 	outWrench.tail(3) = Re*outWrench.tail(3);
+	outWrench = localWrench;
 	geometry_msgs::WrenchStamped wrenchstamp;
 	wrenchstamp.header.stamp = ros::Time::now();
 	wrenchstamp.wrench.force.x = outWrench(0);
@@ -460,7 +500,12 @@ void KUKA_INVDYN::real_interaction_wrench_cb(const geometry_msgs::WrenchStampedC
 	wrenchstamp.wrench.torque.z = outWrench(5);
 
 	_extWrench = localWrench;
-	_extWrench_pub.publish(wrenchstamp);
+	
+	//Eigen::Vector3d S(0.0,0.0,0.1); //braccio
+	//_extWrench.tail(3) = Skew(S) * _extWrench.head(3) + _extWrench.tail(3);
+
+	if(outWrench.norm()<1000)
+		_extWrench_pub.publish(wrenchstamp);
 
 	if((_extWrench.norm()<1000) && _firstCompliant && (zDot_t.norm()!=0)) {
 		//cout<<"calcolo"<<endl;	
@@ -499,35 +544,52 @@ void KUKA_INVDYN::joint_states_cb( sensor_msgs::JointState js ) {
 }
 
 void KUKA_INVDYN::updateState() {
-	double uptresh = 15.0, lowtresh = uptresh/2.0;
-	double gain=2;
+	//return;
+	double uptresh = 0.3, imptresh = 1, timetresh = 1.0;
+	bool up_cond = (_extWrench.norm()>uptresh) && (_extWrench.norm()<imptresh);
+	//bool down_cond = _extWrench.norm()<lowtresh;
+
+	//double uptresh = 0.05, lowtresh = 0.03, imptresh = 0.2, timetresh = 1.0;
+	//double lowtresh = 0.02;
+	//bool up_cond = (zDotDot_t.norm()>uptresh) && (zDotDot_t.norm()<imptresh);
+	bool down_cond = (_extWrench.norm()>1) && (_extWrench.norm()<2);
+
 	switch(_state) {
         case NORMAL:
-          if(_extWrench.norm()>uptresh) {
-		  	_state = HOOKED;
-			ROS_WARN("STATE: HOOKED!");
-			//_Kdt = gain*_Kdt;
-			//_Kpt = gain*_Kpt;
-			//_Mt = gain*_Mt;
+          if( up_cond ) {
+			  _contTime += 1.0/_freq;
+			  ROS_WARN("Entrato");
+			  if(_contTime>timetresh) {
+				_state = HOOKED;
+				ROS_WARN("STATE: HOOKED!");
+				_contTime = 0;
+			  }
+		  } else
+		  {
+			  _contTime = 0;
 		  }
           break;
         case HOOKED:
-          if(_extWrench.norm()<lowtresh) {
-            _state = DETACHED;
-            ROS_WARN("STATE: DETACHED!");
-          }
+          if( down_cond ) {
+			  _contTime += 1.0/_freq;
+			  ROS_WARN("Uscendo");
+			  if(_contTime>(timetresh*4)) {
+				_state = NORMAL;
+				ROS_WARN("STATE: NORMAL!");
+				_contTime = 0;
+			  }
+          } else {
+			  _contTime = 0;
+		  }
           break;
-        case DETACHED:
-		  Eigen::VectorXd complVelEigen;
-		  twist2Vector(_complVel,complVelEigen);
-          if(complVelEigen.norm()<0.001) {
-            _state = NORMAL;
-			ROS_WARN("STATE: NORMAL!");
-			//_Kdt = (1.0/gain)*_Kdt;
-			//_Kpt = (1.0/gain)*_Kpt;
-			//_Mt = (1.0/gain)*_Mt;
-          }
-          break;
+        //case DETACHED:
+		//  Eigen::VectorXd complVelEigen;
+		//  twist2Vector(_complVel,complVelEigen);
+        //  if(complVelEigen.norm()<0.001) {
+        //    _state = NORMAL;
+		//	ROS_WARN("STATE: NORMAL!");
+        //  }
+        //  break;
       }
 }
 
@@ -549,17 +611,21 @@ void KUKA_INVDYN::ctrl_loop() {
 
 	//ETank tank(1.0,0.01,1.0,_sTime);
 	//ETankGen tankGen(3.0,0.01,3.0,_sTime,1);
-	ETankGen stiffnessTank(1.0,0.01,1.0,_sTime,1);
+	ETankGen stiffnessTank(0.5,0.01,0.5,_sTime,1);
 
-	Eigen::MatrixXd finalKp = 2*_Kpt;
+	Eigen::MatrixXd finalKp = 1*_Kpt;
 	Eigen::MatrixXd initialKp = _Kpt;
 	Eigen::MatrixXd KpDot = Eigen::MatrixXd::Zero(6,6);
-	Eigen::MatrixXd finalKd = 1.5*_Kdt;
+	Eigen::MatrixXd finalKd = 3*_Kdt; //4
 	Eigen::MatrixXd initialKd = _Kdt;
 	Eigen::MatrixXd KdDot = Eigen::MatrixXd::Zero(6,6);
-	double finalT = 0.2; //transition in 0.2 seconds
+	Eigen::MatrixXd finalM = 3*_Mt; //4
+	Eigen::MatrixXd initialM = _Mt;
+	Eigen::MatrixXd MDot = Eigen::MatrixXd::Zero(6,6);
+	double finalT = 0.5; //transition in 0.5 seconds
 
 	while( !_first_js ) usleep(0.1);
+	while( !_first_wrench ) usleep(0.1);
 
 	while( ros::ok() ) {
 
@@ -609,6 +675,14 @@ void KUKA_INVDYN::ctrl_loop() {
 				}
 				else
 					KdDot(i,i) = 0;
+
+				if(_Mt(i,i)<finalM(i,i)) {
+					//ROS_WARN("POSITIVA");
+					MDot(i,i) = ((finalM(i,i)-initialM(i,i))/finalT);
+					//_Kpt(i,i) += (finalKp(i,i)/finalT) * _sTime;
+				}
+				else
+					MDot(i,i) = 0;
 			}
 		}
 		else if( _state == NORMAL ) {
@@ -622,48 +696,56 @@ void KUKA_INVDYN::ctrl_loop() {
 				else
 					KpDot(i,i) = 0;
 
-				if(_Kdt(i,i)>finalKd(i,i)) {
+				if(_Kdt(i,i)>initialKd(i,i)) {
 					//ROS_WARN("POSITIVA");
 					KdDot(i,i) = -((finalKd(i,i)-initialKd(i,i))/finalT);
 					//_Kpt(i,i) += (finalKp(i,i)/finalT) * _sTime;
 				}
 				else
 					KdDot(i,i) = 0;
+
+				if(_Mt(i,i)>initialM(i,i)) {
+					//ROS_WARN("POSITIVA");
+					MDot(i,i) = -((finalM(i,i)-initialM(i,i))/finalT);
+					//_Kpt(i,i) += (finalKp(i,i)/finalT) * _sTime;
+				}
+				else
+					MDot(i,i) = 0;
 			}
 		}
 
-		std::vector<Eigen::VectorXd> tankInputs, tankProds;
+		std::vector<double> tankInputs;
 		std::vector<double> tankDiss;
 
 		tankDiss.push_back(zDot_t.dot(_Kdt*zDot_t));
-		Eigen::VectorXd prod = KpDot*z_t;
+		//Eigen::VectorXd prod = KpDot*z_t;
 		//for(int i=0; i<6; i++) {
 		//	tankInputs.push_back(z_t(i));
 		//	tankProds.push_back(prod(i));
 		//}
-		tankInputs.push_back(0.5*z_t);
-		tankProds.push_back(prod);
-		stiffnessTank.update(tankInputs,tankDiss,tankProds);
-		//for(int i=0; i<6; i++)
-		//	_Kpt(i,i) += stiffnessTank._alpha[i] * KpDot(i,i) * _sTime;
-		//if(KpDot(1,1)!=0) {
-			//ROS_WARN("Prints derivata:");
-		//	cout<<stiffnessTank._alpha[0] << " " << _sTime << " " << KpDot(1,1)<<endl;
-		//}
-		std_msgs::Float64 msg;
-		_Kpt += stiffnessTank._alpha[0] * _sTime * KpDot;
-		//_Kpt += _sTime * KpDot;
-		msg.data = _Kpt(0,0);
-		_kpvalue_pub.publish(msg);
-		_Kdt += _sTime * KdDot;
-		msg.data = _Kdt(0,0);
-		_kdvalue_pub.publish(msg);
 		if (stiffnessTank._alpha[0] != 1)
-			cout<<stiffnessTank._alpha[0] << " " << _Kpt(1,1)<<endl;
+			cout<<stiffnessTank._alpha[0] << " " << _Kpt(0,0)<<endl;
+		KpDot *= stiffnessTank._alpha[0];
+		MDot *= stiffnessTank._alpha[0];
+		tankInputs.push_back(0.5*z_t.dot(KpDot*z_t) + 0.5*zDot_t.dot(MDot*zDot_t));
+		stiffnessTank.update(tankInputs,tankDiss);
+	
+		_Kpt += _sTime * KpDot;
+		_Mt += _sTime * MDot;
+		_Kdt += _sTime * KdDot;
+
+		//cout<<_Mt(0,0)<<endl;
+		std_msgs::Float64MultiArray msg;
+		msg.data.resize(3);
+		msg.data[0] = _Kpt(0,0);
+		msg.data[1] = _Kdt(0,0);
+		msg.data[2] = _Mt(0,0);
+		_kpvalue_pub.publish(msg);
 
 		double totalEnergy = _admittanceEnergy - _forcesEnergy + stiffnessTank.getEt()  ;
-		msg.data = totalEnergy;
-		_totalEnergy_pub.publish(msg);
+		std_msgs::Float64 msgenergy;
+		msgenergy.data = totalEnergy;
+		_totalEnergy_pub.publish(msgenergy);
 		//cout<<_Kpt(1,1)<<endl;
 
 
@@ -720,11 +802,6 @@ void KUKA_INVDYN::ctrl_loop() {
 
 		for(int i=0; i<7; i++) jcmd.data[i]=_q_out->data[i];
 		_js_pub.publish(jcmd);
-/*
-		iiwa_msgs::JointPosition commandPos;
-		commandPos.header.stamp = ros::Time::now();
-		commandPos.position.a1=q_out(0);commandPos.position.a2=q_out(1);commandPos.position.a3=q_out(2);commandPos.position.a4=q_out(3);commandPos.position.a5=q_out(4);commandPos.position.a6=q_out(5);commandPos.position.a7=q_out(6);
-		controlPosition.setPosition(commandPos); */
 
 		for(int i=0; i<7; i++ ) {
 			cmd[i].data = _q_out->data[i];
@@ -901,11 +978,16 @@ void KUKA_INVDYN::compute_compliantFrame(const geometry_msgs::PoseStamped& p_des
 	if(!(_extWrench.norm()<1000000))
 		_extWrench = Eigen::VectorXd::Zero(6);
 	zDotDot_t = _Mt.inverse() * ( _extWrench - _Kdt*zDot_t - _Kpt*z_t);
+	//cout<<_Mt(1,1)<<endl;
+	zDotDot_t.tail(3) = Eigen::VectorXd::Zero(3);
+	//cout<<zDotDot_t.transpose()<<endl;
+	//zDotDot_t = Eigen::VectorXd::Zero(6);
 	if(!_first_wrench) {
 		zDotDot_t = Eigen::VectorXd::Zero(6);
 	}
 	zDot_t += zDotDot_t*_sTime;
 	z_t += zDot_t*_sTime;
+	//cout<<z_t.transpose()<<endl;
 
 	geometry_msgs::PointStamped linDiff, linVelDiff;
 	linDiff.header.stamp = ros::Time::now();

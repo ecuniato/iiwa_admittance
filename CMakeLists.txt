@@ -159,6 +159,9 @@ target_link_libraries ( admittance_controller ${catkin_LIBRARIES})
 add_executable( aClient src/trajectoryActionClient.cpp)
 target_link_libraries ( aClient ${catkin_LIBRARIES})
 
+add_executable( experimentClient src/experimentAction.cpp)
+target_link_libraries ( experimentClient ${catkin_LIBRARIES})
+
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
