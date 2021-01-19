@@ -10,6 +10,7 @@
 
    
   <group if="$(arg simulation)">
+    <node name="netft_node" pkg="netft_utils" type="netft_node" args="--address 172.31.1.82"/>
     <include file="$(find lbr_iiwa_description)/launch/gazebo_ctrl.launch" />
     <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher" >
       <remap from="joint_states" to="iiwa/joint_states" />

@@ -28,6 +28,23 @@
 
 using namespace std;
 
+void rotateYaw(const geometry_msgs::PoseStamped& init, geometry_msgs::PoseStamped& final, double incyaw) {
+  tf::Matrix3x3 initR;
+  tf::Quaternion initq(init.pose.orientation.x,init.pose.orientation.y,init.pose.orientation.z,init.pose.orientation.w);
+  initR.setRotation(initq);
+
+  double roll,pitch,yaw;
+  initR.getRPY(roll,pitch,yaw);
+  yaw+=incyaw;
+  initR.setRPY(roll,pitch,yaw);
+  initR.getRotation(initq);
+
+  final.pose.orientation.x = initq.x();
+  final.pose.orientation.y = initq.y();
+  final.pose.orientation.z = initq.z();
+  final.pose.orientation.w = initq.w();
+}
+
 class ETank {
 	public:
 		ETank(double Einit, double Emin, double Emax, double dt) {_Et=Einit;_Emin=Emin; _Emax=Emax; _xt=sqrt(2*_Et);_dt=dt;};
@@ -119,8 +136,7 @@ void ETankGen::update(const std::vector<double> inputs, const std::vector<double
 		//if(i==1) cout<<"Power: "<<gamma*w<<endl;
 
 		wtot+=gamma*w;
-		if(w!=0)
-			cout<<"Power: "<<w<<"  Diss: "<<Diss<<endl;
+		//if(w!=0) cout<<"Power: "<<w<<"  Diss: "<<Diss<<endl;
 	}
 
 	double ut = -(1.0/_xt)*wtot;
@@ -144,7 +160,7 @@ class DERIV {
 
 };
 
-enum diverterState {DETACHED, HOOKED, NORMAL};
+enum diverterState {IMPACT, DETACHED, HOOKED, NORMAL};
 
 class KUKA_INVDYN {
 	public:
@@ -169,7 +185,9 @@ class KUKA_INVDYN {
 		bool getWrench(Eigen::VectorXd& _wrench);
 		bool robotReady() {return _first_fk;};
 		void exitForceControl() {_fControl=false;};
+		const diverterState getState() {return _state;};
 		void actionCB(const kuka_control::waypointsGoalConstPtr &goal);
+		void setDone(bool done) {_mainDone=done;};
 	private:
 		void updatePose();
 		void updateForce();
@@ -243,7 +261,7 @@ class KUKA_INVDYN {
 		LowPassFilter lpf[6];
 		double _admittanceEnergy, _forcesEnergy, _contTime;
 		diverterState _state;
-		bool _firstCompliant;
+		bool _firstCompliant, _mainDone;
 };
 
 bool KUKA_INVDYN::init_robot_model() {
@@ -350,10 +368,10 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 	xf_dot.resize(6); xf_dot=Eigen::VectorXd::Zero(6);
 	xf_dotdot.resize(6); xf_dotdot=Eigen::VectorXd::Zero(6);
 
-	_Mt = 1*Eigen::MatrixXd::Identity(6,6); //1
-	//_Mt.bottomRightCorner(3,3) = 70*Eigen::MatrixXd::Identity(3,3);
+	_Mt =  1*Eigen::MatrixXd::Identity(6,6); //1
 	_Kdt = 15*Eigen::MatrixXd::Identity(6,6); //15
 	_Kpt = 10*Eigen::MatrixXd::Identity(6,6); //10
+	//_Mt.bottomRightCorner(3,3) = 70*Eigen::MatrixXd::Identity(3,3);
 	//_Kpt.bottomRightCorner(3,3) = 1000*Eigen::MatrixXd::Identity(3,3);
 	//_Mt(1,1) = 3;
 	//_Kdt(1,1) = 150;
@@ -377,6 +395,7 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 	_newPosReady = false;
 	_first_wrench = false;
 	_firstCompliant = false;
+	_mainDone = false;
 
 	_contTime=0;
 
@@ -574,22 +593,40 @@ void KUKA_INVDYN::updateState() {
 			  _contTime += 1.0/_freq;
 			  ROS_WARN("Uscendo");
 			  if(_contTime>(timetresh*4)) {
-				_state = NORMAL;
-				ROS_WARN("STATE: NORMAL!");
+				//_state = NORMAL;
+				//ROS_WARN("STATE: NORMAL!");
+				_state = DETACHED;
+				ROS_WARN("STATE: DETACHED!");
 				_contTime = 0;
 			  }
           } else {
 			  _contTime = 0;
 		  }
           break;
-        //case DETACHED:
-		//  Eigen::VectorXd complVelEigen;
-		//  twist2Vector(_complVel,complVelEigen);
-        //  if(complVelEigen.norm()<0.001) {
-        //    _state = NORMAL;
-		//	ROS_WARN("STATE: NORMAL!");
-        //  }
-        //  break;
+        case DETACHED:
+			if( _trajEnd ) {
+			  _contTime += 1.0/_freq;
+			  if(_contTime>(timetresh*4)) {
+				_state = IMPACT;
+				ROS_WARN("STATE: IMPACT!");
+				_contTime = 0;
+			  }
+          	} else {
+				_contTime = 0;
+		  	}
+        	break;
+		case IMPACT:
+			if( _mainDone ) {
+			  _contTime += 1.0/_freq;
+			  if(_contTime>(timetresh*4)) {
+				_state = NORMAL;
+				ROS_WARN("STATE: NORMAL!");
+				_contTime = 0;
+			  }
+          	} else {
+				_contTime = 0;
+		  	}
+        	break;
       }
 }
 
@@ -658,7 +695,18 @@ void KUKA_INVDYN::ctrl_loop() {
 		//compute_compliantFrame(_desPose,_desVel,_desAcc,tankGen._alpha);
 
 
-		if( (_state == HOOKED) || (_state == DETACHED) ) {
+		if( (_state == HOOKED) || (_state == IMPACT) ) {
+			if(_state == HOOKED) {
+				finalKp = 10*Eigen::MatrixXd::Identity(6,6); 
+				finalKd = 5*15*Eigen::MatrixXd::Identity(6,6);
+				finalM =  3*1*Eigen::MatrixXd::Identity(6,6);
+			}
+			else if(_state == IMPACT) {
+				finalKp = 400*Eigen::MatrixXd::Identity(6,6); 
+				finalKd = 800*Eigen::MatrixXd::Identity(6,6);
+				finalM =  30*Eigen::MatrixXd::Identity(6,6);
+			}
+
 			for(int i=0; i<6; i++) {
 				if(_Kpt(i,i)<finalKp(i,i)) {
 					//ROS_WARN("POSITIVA");
@@ -685,7 +733,7 @@ void KUKA_INVDYN::ctrl_loop() {
 					MDot(i,i) = 0;
 			}
 		}
-		else if( _state == NORMAL ) {
+		else if( _state == NORMAL || (_state == DETACHED)) {
 			for(int i=0; i<6; i++) {
 				if(_Kpt(i,i)>initialKp(i,i)) {
 					//ROS_WARN("NEGATIVA");
@@ -730,9 +778,23 @@ void KUKA_INVDYN::ctrl_loop() {
 		tankInputs.push_back(0.5*z_t.dot(KpDot*z_t) + 0.5*zDot_t.dot(MDot*zDot_t));
 		stiffnessTank.update(tankInputs,tankDiss);
 	
-		_Kpt += _sTime * KpDot;
+		_Kpt += _sTime * KpDot;	
 		_Mt += _sTime * MDot;
 		_Kdt += _sTime * KdDot;
+		if(_Kpt.norm()>finalKp.norm())
+			_Kpt = finalKp;
+		else if(_Kpt.norm()<initialKp.norm())
+			_Kpt = initialKp;
+
+		if(_Kdt.norm()>finalKd.norm())
+			_Kdt = finalKd;
+		else if(_Kdt.norm()<initialKd.norm())
+			_Kdt = initialKd;
+
+		if(_Mt.norm()>finalM.norm())
+			_Mt = finalM;
+		else if(_Mt.norm()<initialM.norm())
+			_Mt = initialM;
 
 		//cout<<_Mt(0,0)<<endl;
 		std_msgs::Float64MultiArray msg;
@@ -742,11 +804,11 @@ void KUKA_INVDYN::ctrl_loop() {
 		msg.data[2] = _Mt(0,0);
 		_kpvalue_pub.publish(msg);
 
-		double totalEnergy = _admittanceEnergy - _forcesEnergy + stiffnessTank.getEt()  ;
+		double totalEnergy = _admittanceEnergy - _forcesEnergy + stiffnessTank.getEt();
 		std_msgs::Float64 msgenergy;
 		msgenergy.data = totalEnergy;
 		_totalEnergy_pub.publish(msgenergy);
-		//cout<<_Kpt(1,1)<<endl;
+		//cout<<KdDot(1,1)<<endl;
 
 
 		_desPose_pub.publish(_desPose);
@@ -1118,13 +1180,13 @@ bool KUKA_INVDYN::newTrajectory(const std::vector<geometry_msgs::PoseStamped> wa
 			_actionFeedback.completePerc=status;
 			_kukaActionServer.publishFeedback(_actionFeedback);
 			if (_kukaActionServer.isPreemptRequested())
-      {
-        ROS_INFO("ACTION Preempted");
-        // set the action state to preempted
-        _kukaActionServer.setPreempted();
-				_trajEnd=true;
-        return false;
-      }
+      			{
+      			  ROS_INFO("ACTION Preempted");
+      			  // set the action state to preempted
+      			  _kukaActionServer.setPreempted();
+							_trajEnd=true;
+      			  return false;
+      			}
 		}
 	}
 
@@ -1360,62 +1422,63 @@ int main(int argc, char** argv) {
 
 	KUKA_INVDYN iiwa(0.01);
 	iiwa.run();
-/*
-	geometry_msgs::PoseStamped pose;
-	while(!lwr.getPose(pose) && ros::ok()) sleep(2);
+	ros::Rate r(50);
+	diverterState state,oldState;
+	state = iiwa.getState();
+	oldState = state;
 
-	std::vector<geometry_msgs::PoseStamped> waypoints;
-	geometry_msgs::PoseStamped p=pose;
-	waypoints.push_back(pose);
+	while(ros::ok()) {
+		state = iiwa.getState();
+		if((state == DETACHED) && (oldState==HOOKED)) {
+			ROS_WARN("Transition from HOOKED to DETACHED.");
+			std::vector<geometry_msgs::PoseStamped> waypoints;
+			geometry_msgs::PoseStamped p;
+			iiwa.getDesPose(p);
+			waypoints.push_back(p); //Initial
+			p.pose.position.x = 0.5;
+			p.pose.position.y = 0.0;
+			p.pose.position.z = 0.2;
+  			rotateYaw(p,p,M_PI/2);
+  			waypoints.push_back(p); //medio
+			p.pose.position.x = -0.041;
+			p.pose.position.y = 0.696;
+			p.pose.position.z = 0.48-0.30;
+  			tf::Quaternion qinit(0.617,0.784,0.041,-0.038);
+  			qinit.normalize();
+			p.pose.orientation.z = qinit.z();
+			p.pose.orientation.w = qinit.w();
+			p.pose.orientation.x = qinit.x();
+			p.pose.orientation.y = qinit.y();
+  			waypoints.push_back(p); //finale
+			std::vector<double> times;
+  			times.push_back(0);
+  			times.push_back(15);
+			times.push_back(30);
+			iiwa.newTrajectory(waypoints,times);
+		}
+		else if((state == IMPACT) && (oldState==DETACHED)) {
+			ROS_WARN("Transition from DETACHED to IMPACT.");
+			iiwa.setDone(false);
+			char c;
+			cin>>c;
+			if(!ros::ok()) exit(0);
+			std::vector<geometry_msgs::PoseStamped> waypoints;
+			geometry_msgs::PoseStamped p;
+			iiwa.getDesPose(p);
+			waypoints.push_back(p); //Initial
+			p.pose.position.z += 0.30;
+			waypoints.push_back(p); //Initial
+			std::vector<double> times;
+			times.push_back(0);
+  			times.push_back(1);
+			iiwa.newTrajectory(waypoints,times);
+			//iiwa.setDone(true);
+		}
 
-	tf::Quaternion qorient(p.pose.orientation.x,p.pose.orientation.y,p.pose.orientation.z,p.pose.orientation.w);
-	tf::Matrix3x3 orient(qorient);
-	double roll,pitch,yaw;
-	orient.getRPY(roll,pitch,yaw);
-	//cout<<roll<<" "<<pitch<<" "<<yaw<<" "<<endl;
-	//qorient.setRPY(roll-90,pitch,yaw);
-	p.pose.position.x = 0;
-	p.pose.position.y -= 0.47;
-	p.pose.position.z -= 0.3;
-	p.pose.orientation.z = -0.5;
-	p.pose.orientation.w = 0.5;
-	p.pose.orientation.x = -0.5;
-	p.pose.orientation.y = 0.5;
-	waypoints.push_back(p);
-	std::vector<double> times;
-	times.push_back(0);
-	times.push_back(5);
+		oldState=state;
+		r.sleep();
+	}
 
-	lwr.newTrajectory(waypoints,times); //Compute new trajectory
-	cout<<"Trajectory complete!"<<endl<<endl;
-	sleep(5);
-
-	cout<<"Force control!"<<endl<<endl;
-	Eigen::VectorXd he(6),mask(6);
-	lwr.getWrench(he);
-	std::vector<Eigen::VectorXd> force_wp;
-	force_wp.push_back(he);
-	mask=Eigen::VectorXd::Zero(6);
-	mask(1)=1;
-	he(1)+=5;
-	force_wp.push_back(he);
-	times[1]=10;
-
-	lwr.newForceTrajectory(force_wp,times,mask);
-
-	cout<<"Force control complete!"<<endl<<endl;
-	sleep(10);
-	lwr.exitForceControl();
-
-	waypoints.clear(); times.clear();
-	lwr.getDesPose(p);
-	waypoints.push_back(p); times.push_back(0);
-	waypoints.push_back(pose); times.push_back(5);
-
-	lwr.newTrajectory(waypoints,times); //Compute new trajectory
-	cout<<"Trajectory complete!"<<endl<<endl;
-
-*/
 	ros::waitForShutdown();
 
 	return 0;
