@@ -172,6 +172,7 @@ class KUKA_INVDYN {
 		void joint_states_cb( sensor_msgs::JointState );
 		void interaction_wrench_cb(const gazebo_msgs::ContactsStateConstPtr&);
 		void real_interaction_wrench_cb(const geometry_msgs::WrenchStampedConstPtr&);
+		void drone_posfb_cb(const std_msgs::Float64MultiArrayConstPtr& message);
 		void ctrl_loop();
 		void compute_force_errors(const Eigen::VectorXd h, const Eigen::VectorXd hdot, const Eigen::VectorXd mask);
 		void compute_errors(const geometry_msgs::PoseStamped& p_des, const geometry_msgs::TwistStamped& v_des, const geometry_msgs::AccelStamped& a_des);
@@ -206,10 +207,10 @@ class KUKA_INVDYN {
 
 		ros::Subscriber _js_sub;
 		ros::Publisher _js_pub;
-		ros::Subscriber _wrench_sub, _real_wrench_sub;
+		ros::Subscriber _wrench_sub, _real_wrench_sub, _dronePosFb_sub;
 		ros::Publisher _cartpose_pub, _cartvel_pub, _desPose_pub, _extWrench_pub, _linearDifference_pub, _linearVelDifference_pub;
 		ros::Publisher _plannedpose_pub,_plannedtwist_pub,_plannedacc_pub,_plannedwrench_pub;
-		ros::Publisher _robotEnergy_pub, _totalEnergy_pub, _totalPower_pub, _kpvalue_pub, _kdvalue_pub;
+		ros::Publisher _robotEnergy_pub, _totalEnergy_pub, _tankEnergy_pub, _totalPower_pub, _kpvalue_pub, _kdvalue_pub;
 		KDL::JntArray *_initial_q;
 		KDL::JntArray *_q_in;
 		KDL::JntArray *_q_out;
@@ -261,7 +262,8 @@ class KUKA_INVDYN {
 		LowPassFilter lpf[6];
 		double _admittanceEnergy, _forcesEnergy, _contTime;
 		diverterState _state;
-		bool _firstCompliant, _mainDone;
+		bool _firstCompliant, _mainDone, _dronePos_ready;
+		Eigen::Vector3d _dronePos;
 };
 
 bool KUKA_INVDYN::init_robot_model() {
@@ -323,6 +325,7 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 	_js_pub = _nh.advertise<std_msgs::Float64MultiArray>("/iiwa/jointsCommand", 0);
 	_wrench_sub = _nh.subscribe("/tool_contact_sensor_state", 0, &KUKA_INVDYN::interaction_wrench_cb, this);
 	_real_wrench_sub = _nh.subscribe("/netft_data", 0, &KUKA_INVDYN::real_interaction_wrench_cb, this);
+	_dronePosFb_sub = _nh.subscribe("/controller/posFeedback", 0, &KUKA_INVDYN::drone_posfb_cb, this);
 
 	_cartpose_pub = _nh.advertise<geometry_msgs::PoseStamped>("/iiwa/eef_pose", 0);
 	_cartvel_pub = _nh.advertise<geometry_msgs::TwistStamped>("/iiwa/eef_twist", 0);
@@ -335,17 +338,18 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 	_robotEnergy_pub = _nh.advertise<std_msgs::Float64>("/iiwa/admittance_energy", 0);
 	_totalEnergy_pub = _nh.advertise<std_msgs::Float64>("/iiwa/total_energy", 0);
 	_totalPower_pub = _nh.advertise<std_msgs::Float64>("/iiwa/total_power", 0);
+	_tankEnergy_pub = _nh.advertise<std_msgs::Float64>("/iiwa/tank_energy", 0);
 	_linearDifference_pub = _nh.advertise<geometry_msgs::PointStamped>("/iiwa/linearDifference", 0);
 	_linearVelDifference_pub = _nh.advertise<geometry_msgs::PointStamped>("/iiwa/linearVelDifference", 0);
 	_kpvalue_pub = _nh.advertise<std_msgs::Float64MultiArray>("/iiwa/admit_gains", 0);
 
-	_cmd_pub[0] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint1_position_controller/command", 0);
-	_cmd_pub[1] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint2_position_controller/command", 0);
-	_cmd_pub[2] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint3_position_controller/command", 0);
-	_cmd_pub[3] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint4_position_controller/command", 0);
-	_cmd_pub[4] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint5_position_controller/command", 0);
-	_cmd_pub[5] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint6_position_controller/command", 0);
-	_cmd_pub[6] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint7_position_controller/command", 0);
+	//_cmd_pub[0] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint1_position_controller/command", 0);
+	//_cmd_pub[1] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint2_position_controller/command", 0);
+	//_cmd_pub[2] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint3_position_controller/command", 0);
+	//_cmd_pub[3] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint4_position_controller/command", 0);
+	//_cmd_pub[4] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint5_position_controller/command", 0);
+	//_cmd_pub[5] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint6_position_controller/command", 0);
+	//_cmd_pub[6] = _nh.advertise< std_msgs::Float64 > ("iiwa/joint7_position_controller/command", 0);
 
 	x_t.resize(6);
 	xDot_t.resize(6);
@@ -370,7 +374,8 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 
 	_Mt =  1*Eigen::MatrixXd::Identity(6,6); //1
 	_Kdt = 15*Eigen::MatrixXd::Identity(6,6); //15
-	_Kpt = 10*Eigen::MatrixXd::Identity(6,6); //10
+	_Kpt = 13*Eigen::MatrixXd::Identity(6,6); //10
+
 	//_Mt.bottomRightCorner(3,3) = 70*Eigen::MatrixXd::Identity(3,3);
 	//_Kpt.bottomRightCorner(3,3) = 1000*Eigen::MatrixXd::Identity(3,3);
 	//_Mt(1,1) = 3;
@@ -384,6 +389,7 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 	_h_des.resize(6); _h_des=Eigen::VectorXd::Zero(6);
 	_hdot_des.resize(6); _hdot_des=Eigen::VectorXd::Zero(6);
 	_acc.resize(6);_acc=Eigen::VectorXd::Zero(6);
+	_dronePos = Eigen::Vector3d::Zero();
 
 	_admittanceEnergy = 0;
 	_state = NORMAL;
@@ -400,6 +406,14 @@ KUKA_INVDYN::KUKA_INVDYN(double sampleTime) :
 	_contTime=0;
 
 	_kukaActionServer.start();
+}
+
+void KUKA_INVDYN::drone_posfb_cb(const std_msgs::Float64MultiArrayConstPtr& message) {
+	_dronePos(0) = message->data[0];
+	_dronePos(1) = message->data[1];
+	_dronePos(2) = message->data[2];
+
+	_dronePos_ready = true;
 }
 
 bool KUKA_INVDYN::getPose(geometry_msgs::PoseStamped& p_des) {
@@ -495,19 +509,21 @@ void KUKA_INVDYN::real_interaction_wrench_cb(const geometry_msgs::WrenchStampedC
 
 	for (int i=0; i<6; i++) {
 		//cout<<lpf[i].update(localWrench(i),0.002,100.0/(2.0*M_PI))<<"  real:"<<localWrench(i)<<endl;
-		localWrench(i) = lpf[i].update(localWrench(i),0.002,3.0/(2.0*M_PI));
+		localWrench(i) = lpf[i].update(localWrench(i),0.002,5.0/(2.0*M_PI));
 	}
 	//cout<<endl;
 
 	tf::Quaternion qe(_pose.pose.orientation.x,_pose.pose.orientation.y,_pose.pose.orientation.z,_pose.pose.orientation.w);
-	tf::Matrix3x3 Re_tf;
-	Eigen::Matrix3d Re;
-	Re_tf.setRotation(qe);
-	tf::matrixTFToEigen(Re_tf,Re);
-	localWrench.head(3) = Re*localWrench.head(3);
-	localWrench.tail(3) = Re*localWrench.tail(3);
-	outWrench.head(3) = Re*outWrench.head(3);
-	outWrench.tail(3) = Re*outWrench.tail(3);
+    Vector3d pe(_pose.pose.position.x,_pose.pose.position.y,_pose.pose.position.z);
+    tf::Matrix3x3 Re_tf;
+    Eigen::Matrix3d Re;
+    Re_tf.setRotation(qe);
+    tf::matrixTFToEigen(Re_tf,Re);
+    MatrixXd staticTransf(6,6);
+    staticTransf << Re, MatrixXd::Zero(3,3),
+                    Skew(pe)*Re, Re;
+    localWrench = staticTransf*localWrench;
+    outWrench = staticTransf*outWrench;
 	outWrench = localWrench;
 	geometry_msgs::WrenchStamped wrenchstamp;
 	wrenchstamp.header.stamp = ros::Time::now();
@@ -564,21 +580,21 @@ void KUKA_INVDYN::joint_states_cb( sensor_msgs::JointState js ) {
 
 void KUKA_INVDYN::updateState() {
 	//return;
-	double uptresh = 0.3, imptresh = 1, timetresh = 1.0;
+	double uptresh = 0.5, imptresh = 3, timetresh = 1.0;
 	bool up_cond = (_extWrench.norm()>uptresh) && (_extWrench.norm()<imptresh);
 	//bool down_cond = _extWrench.norm()<lowtresh;
 
 	//double uptresh = 0.05, lowtresh = 0.03, imptresh = 0.2, timetresh = 1.0;
 	//double lowtresh = 0.02;
 	//bool up_cond = (zDotDot_t.norm()>uptresh) && (zDotDot_t.norm()<imptresh);
-	bool down_cond = (_extWrench.norm()>1) && (_extWrench.norm()<2);
+	bool down_cond = ( _extWrench(2)>(-2) ) && ( _extWrench(2)<(-1) );
 
 	switch(_state) {
         case NORMAL:
           if( up_cond ) {
 			  _contTime += 1.0/_freq;
 			  ROS_WARN("Entrato");
-			  if(_contTime>timetresh) {
+			  if(_contTime>(timetresh*2)) {
 				_state = HOOKED;
 				ROS_WARN("STATE: HOOKED!");
 				_contTime = 0;
@@ -661,10 +677,15 @@ void KUKA_INVDYN::ctrl_loop() {
 	Eigen::MatrixXd MDot = Eigen::MatrixXd::Zero(6,6);
 	double finalT = 0.5; //transition in 0.5 seconds
 
+	bool emergencyShut = false;
+	LowPassFilter* dronepos_filter[3];
+	for (int i=0; i<3; i++)
+		dronepos_filter[i] = new LowPassFilter(30.0/(2.0*M_PI),(1.0/_freq));
+
 	while( !_first_js ) usleep(0.1);
 	while( !_first_wrench ) usleep(0.1);
 
-	while( ros::ok() ) {
+	while( ros::ok() && (!emergencyShut)) {
 
     while( !_sync ) usleep(0.1);
 
@@ -694,17 +715,19 @@ void KUKA_INVDYN::ctrl_loop() {
 
 		//compute_compliantFrame(_desPose,_desVel,_desAcc,tankGen._alpha);
 
-
 		if( (_state == HOOKED) || (_state == IMPACT) ) {
 			if(_state == HOOKED) {
-				finalKp = 10*Eigen::MatrixXd::Identity(6,6); 
-				finalKd = 5*15*Eigen::MatrixXd::Identity(6,6);
-				finalM =  3*1*Eigen::MatrixXd::Identity(6,6);
+				finalKp = 13*Eigen::MatrixXd::Identity(6,6); 
+				finalKd = 2*15*Eigen::MatrixXd::Identity(6,6); //4
+				finalM =  3*1*Eigen::MatrixXd::Identity(6,6); //3
 			}
 			else if(_state == IMPACT) {
 				finalKp = 400*Eigen::MatrixXd::Identity(6,6); 
 				finalKd = 800*Eigen::MatrixXd::Identity(6,6);
 				finalM =  30*Eigen::MatrixXd::Identity(6,6);
+				finalKp(1,1) = 20;
+				finalKd(1,1) = 30;
+				finalM(1,1) = 1;
 			}
 
 			for(int i=0; i<6; i++) {
@@ -809,7 +832,9 @@ void KUKA_INVDYN::ctrl_loop() {
 		msgenergy.data = totalEnergy;
 		_totalEnergy_pub.publish(msgenergy);
 		//cout<<KdDot(1,1)<<endl;
-
+		std_msgs::Float64 msgtank;
+		msgtank.data = stiffnessTank.getEt();
+		_tankEnergy_pub.publish(msgtank);
 
 		_desPose_pub.publish(_desPose);
 		updateState();
@@ -839,9 +864,41 @@ void KUKA_INVDYN::ctrl_loop() {
 		F_dest.M.data[7] = R[2][1];
 		F_dest.M.data[8] = R[2][2];
 
-		F_dest.p.data[0] = _complPose.pose.position.x;
-		F_dest.p.data[1] = _complPose.pose.position.y;
-		F_dest.p.data[2] = _complPose.pose.position.z;
+		if(!_dronePos_ready) {
+			F_dest.p.data[0] = _complPose.pose.position.x;
+			F_dest.p.data[1] = _complPose.pose.position.y;
+			F_dest.p.data[2] = _complPose.pose.position.z;
+		} else {
+			Vector3d diff = _dronePos;
+			Vector3d actualPos(_pose.pose.position.x,_pose.pose.position.y,_pose.pose.position.z);
+			Vector3d actualVel;
+			double tresh = 0.02;//1cm
+			for(int i=0; i<3; i++) {
+				if(diff(i)>tresh) diff(i) = tresh;
+				else if(diff(i)<(-tresh)) diff(i) = (-tresh);
+			}
+
+			actualVel(0) =_pose.pose.position.x-_complPose.pose.position.x-diff(0);
+			actualVel(1) =_pose.pose.position.y-_complPose.pose.position.y-diff(1);
+			actualVel(2) =_pose.pose.position.z-_complPose.pose.position.z-diff(2);
+			actualVel = _freq*actualVel;
+			//if (actualVel.norm()>2.0) {
+			//	ROS_ERROR("Emergency shutdown!");
+			//	emergencyShut=true;
+			//}
+
+			//cout<<"DronePos: "<<diff.transpose()<<endl;
+			//cout<<"Vel: "<<actualVel.norm()<<endl;
+			
+			F_dest.p.data[0] = _complPose.pose.position.x + (dronepos_filter[0]->update(diff(0)) );
+			F_dest.p.data[1] = _complPose.pose.position.y + (dronepos_filter[1]->update(diff(1)) );
+			F_dest.p.data[2] = _complPose.pose.position.z + (dronepos_filter[2]->update(diff(2)) );
+			//for(int i=0; i<3; i++)
+			//	cout<<"real: "<<diff(i)<<" filter: "<<dronepos_filter[i]->getOutput()<<endl;
+			
+		}
+
+		if(F_dest.p.data[1]>0.75) F_dest.p.data[1]=0.75; //workspace saturation
 
 
 		//cout<<"joints: ";
@@ -861,16 +918,17 @@ void KUKA_INVDYN::ctrl_loop() {
 */
 		}
 		
-
-		for(int i=0; i<7; i++) jcmd.data[i]=_q_out->data[i];
-		_js_pub.publish(jcmd);
-
-		for(int i=0; i<7; i++ ) {
-			cmd[i].data = _q_out->data[i];
+		if(!emergencyShut) {
+			for(int i=0; i<7; i++) jcmd.data[i]=_q_out->data[i];
+			_js_pub.publish(jcmd);
 		}
-		for(int i=0; i<7; i++ ) {
-			_cmd_pub[i].publish( cmd[i] );
-		}
+
+		//for(int i=0; i<7; i++ ) {
+		//	cmd[i].data = _q_out->data[i];
+		//}
+		//for(int i=0; i<7; i++ ) {
+		//	_cmd_pub[i].publish( cmd[i] );
+		//}
 
 
 		_sync = false;
@@ -1437,12 +1495,12 @@ int main(int argc, char** argv) {
 			waypoints.push_back(p); //Initial
 			p.pose.position.x = 0.5;
 			p.pose.position.y = 0.0;
-			p.pose.position.z = 0.2;
+			p.pose.position.z = 0.4;
   			rotateYaw(p,p,M_PI/2);
   			waypoints.push_back(p); //medio
 			p.pose.position.x = -0.041;
-			p.pose.position.y = 0.696;
-			p.pose.position.z = 0.48-0.30;
+			p.pose.position.y = 0.65;//0.65
+			p.pose.position.z = 0.50-0.30;//0.50-0.30
   			tf::Quaternion qinit(0.617,0.784,0.041,-0.038);
   			qinit.normalize();
 			p.pose.orientation.z = qinit.z();
@@ -1452,26 +1510,30 @@ int main(int argc, char** argv) {
   			waypoints.push_back(p); //finale
 			std::vector<double> times;
   			times.push_back(0);
-  			times.push_back(15);
-			times.push_back(30);
+  			times.push_back(12);//15
+			times.push_back(22);//30
 			iiwa.newTrajectory(waypoints,times);
 		}
 		else if((state == IMPACT) && (oldState==DETACHED)) {
 			ROS_WARN("Transition from DETACHED to IMPACT.");
 			iiwa.setDone(false);
-			char c;
-			cin>>c;
+			//char c;
+			//cin>>c;
+			sleep(4);
 			if(!ros::ok()) exit(0);
 			std::vector<geometry_msgs::PoseStamped> waypoints;
 			geometry_msgs::PoseStamped p;
 			iiwa.getDesPose(p);
 			waypoints.push_back(p); //Initial
-			p.pose.position.z += 0.30;
+			p.pose.position.z += 0.10;//0.30
 			waypoints.push_back(p); //Initial
 			std::vector<double> times;
 			times.push_back(0);
   			times.push_back(1);
+			
 			iiwa.newTrajectory(waypoints,times);
+			sleep(1);
+			exit(0);
 			//iiwa.setDone(true);
 		}
 

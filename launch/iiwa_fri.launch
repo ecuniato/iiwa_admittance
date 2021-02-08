@@ -35,7 +35,7 @@
 
     <node name="netft_node" pkg="netft_utils" type="netft_node" args="--address 172.31.1.82"/>
 
-    <node type="rviz" name="rviz" pkg="rviz" args="-d $(find kuka_control)/config.rviz" />
+    <!-- <node type="rviz" name="rviz" pkg="rviz" args="-d $(find kuka_control)/config.rviz" /> -->
   </group>
 
 </launch>
